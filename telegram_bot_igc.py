@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🎯 India Genius Challenge - Telegram Bot (Webhook Version - Python 3.14 Compatible)
+🎯 India Genius Challenge - Telegram Bot (Webhook Version)
 """
 
 import os
@@ -9,8 +9,6 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request
-import aiohttp
-import asyncio
 import requests
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -20,7 +18,8 @@ import requests
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8989521653:AAGGnpq4bX_U4pQbTSjpdEZbjACUpD6jEnI")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8966464433:AAHWg3nbvK-d1yFUxJ3LdrqIgTcnvYNhTsg")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://igc-telegram-bot.onrender.com")
 BASE_URL = "https://www.indiageniuschallenge.com"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
@@ -30,8 +29,11 @@ STORAGE_DIR.mkdir(exist_ok=True)
 PROFILES_FILE = STORAGE_DIR / "profiles.json"
 app = Flask(__name__)
 
+logger.info(f"Bot Token: {BOT_TOKEN[:20]}...")
+logger.info(f"Webhook URL: {WEBHOOK_URL}/webhook")
+
 # ═══════════════════════════════════════════════════════════════════════
-# 💾 STORAGE FUNCTIONS
+# 💾 STORAGE
 # ═══════════════════════════════════════════════════════════════════════
 
 def load_profiles():
@@ -63,11 +65,11 @@ def save_user_profile(user_id, profile_name, session_token, session_data):
     save_profiles(profiles)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 📱 TELEGRAM API HELPERS
+# 📱 TELEGRAM API
 # ═══════════════════════════════════════════════════════════════════════
 
 def send_message(chat_id, text, keyboard=None):
-    """Send a message to user"""
+    """Send message"""
     data = {
         "chat_id": chat_id,
         "text": text,
@@ -75,19 +77,17 @@ def send_message(chat_id, text, keyboard=None):
     }
     
     if keyboard:
-        data["reply_markup"] = {
-            "inline_keyboard": keyboard
-        }
+        data["reply_markup"] = {"inline_keyboard": keyboard}
     
     try:
         response = requests.post(f"{TELEGRAM_API}/sendMessage", json=data, timeout=10)
         return response.json()
     except Exception as e:
-        logger.error(f"Send message error: {e}")
+        logger.error(f"Send error: {e}")
         return None
 
 def edit_message(chat_id, message_id, text, keyboard=None):
-    """Edit a message"""
+    """Edit message"""
     data = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -96,23 +96,18 @@ def edit_message(chat_id, message_id, text, keyboard=None):
     }
     
     if keyboard:
-        data["reply_markup"] = {
-            "inline_keyboard": keyboard
-        }
+        data["reply_markup"] = {"inline_keyboard": keyboard}
     
     try:
         response = requests.post(f"{TELEGRAM_API}/editMessageText", json=data, timeout=10)
         return response.json()
     except Exception as e:
-        logger.error(f"Edit message error: {e}")
+        logger.error(f"Edit error: {e}")
         return None
 
-def answer_callback(callback_query_id, text=None, show_alert=False):
-    """Answer callback query"""
-    data = {
-        "callback_query_id": callback_query_id,
-        "show_alert": show_alert
-    }
+def answer_callback(callback_id, text=None):
+    """Answer callback"""
+    data = {"callback_query_id": callback_id}
     if text:
         data["text"] = text
     
@@ -122,11 +117,11 @@ def answer_callback(callback_query_id, text=None, show_alert=False):
         logger.error(f"Callback error: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════
-# 🤖 HANDLERS
+# 🎯 HANDLERS
 # ═══════════════════════════════════════════════════════════════════════
 
-def handle_start(chat_id, user_name):
-    """Handle /start command"""
+def send_main_menu(chat_id, user_name):
+    """Send main menu"""
     text = f"""
 ╔══════════════════════════════════════╗
 ║ 🎯 INDIA GENIUS CHALLENGE - BOT 🎯  ║
@@ -134,8 +129,6 @@ def handle_start(chat_id, user_name):
 ╚══════════════════════════════════════╝
 
 👋 Welcome, {user_name}!
-
-Choose what you'd like to do:
 """
     
     keyboard = [
@@ -146,81 +139,18 @@ Choose what you'd like to do:
     
     send_message(chat_id, text, keyboard)
 
-def handle_quiz_menu(chat_id, message_id, user_id):
-    """Show quiz menu"""
-    profiles = get_user_profiles(user_id)
-    
-    if not profiles:
-        text = "❌ <b>No Profiles Found!</b>\n\nPlease create a profile first."
-        keyboard = [
-            [{"text": "➕ Add Profile", "callback_data": "add_profile"}],
-            [{"text": "🔙 Back", "callback_data": "back_menu"}],
-        ]
-        edit_message(chat_id, message_id, text, keyboard)
-        return
-    
-    keyboard = []
-    for profile_name in profiles.keys():
-        keyboard.append([{"text": f"✅ {profile_name}", "callback_data": f"select_{profile_name}"}])
-    keyboard.append([{"text": "🔙 Back", "callback_data": "back_menu"}])
-    
-    edit_message(chat_id, message_id, "📋 <b>Select Profile:</b>", keyboard)
-
-def handle_profile_menu(chat_id, message_id, user_id):
-    """Show profile menu"""
-    profiles = get_user_profiles(user_id)
-    
-    text = "👤 <b>Profiles</b>\n\n"
-    if profiles:
-        for name in profiles.keys():
-            text += f"  • {name}\n"
-    else:
-        text += "<i>No profiles</i>\n"
-    
-    keyboard = [
-        [{"text": "➕ Add Profile", "callback_data": "add_profile"}],
-        [{"text": "🔙 Back", "callback_data": "back_menu"}],
-    ]
-    
-    edit_message(chat_id, message_id, text, keyboard)
-
-def handle_add_profile(chat_id):
-    """Start adding profile"""
-    text = "📝 <b>Enter Profile Name</b>\n\nSend the profile name:"
-    send_message(chat_id, text)
-
-def handle_back_menu(chat_id, message_id, user_id, user_name):
-    """Go back to main menu"""
-    text = f"""
-╔══════════════════════════════════════╗
-║ 🎯 INDIA GENIUS CHALLENGE - BOT 🎯  ║
-║  Run 3 Parallel Quiz Attempts       ║
-╚══════════════════════════════════════╝
-
-👋 Welcome, {user_name}!
-
-Choose what you'd like to do:
-"""
-    
-    keyboard = [
-        [{"text": "🎮 Start Quiz", "callback_data": "quiz_menu"}],
-        [{"text": "👤 Manage Profiles", "callback_data": "profile_menu"}],
-        [{"text": "📊 View Stats", "callback_data": "view_stats"}],
-    ]
-    
-    edit_message(chat_id, message_id, text, keyboard)
-
 # ═══════════════════════════════════════════════════════════════════════
-# 🌐 WEBHOOK ENDPOINT
+# 🌐 WEBHOOK
 # ═══════════════════════════════════════════════════════════════════════
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Handle incoming webhook"""
+    """Handle webhook updates"""
     try:
         data = request.get_json()
+        logger.info(f"Webhook received: {data}")
         
-        # Handle message
+        # Message
         if "message" in data:
             message = data["message"]
             chat_id = message["chat"]["id"]
@@ -228,10 +158,14 @@ def webhook():
             user_name = message["from"].get("first_name", "User")
             text = message.get("text", "")
             
+            logger.info(f"Message from {user_id}: {text}")
+            
             if text == "/start":
-                handle_start(chat_id, user_name)
+                send_main_menu(chat_id, user_name)
+            else:
+                send_message(chat_id, f"👋 You said: {text}\n\nUse /start to begin!")
         
-        # Handle callback query
+        # Callback
         elif "callback_query" in data:
             callback = data["callback_query"]
             chat_id = callback["message"]["chat"]["id"]
@@ -241,22 +175,67 @@ def webhook():
             callback_data = callback.get("data", "")
             callback_id = callback["id"]
             
+            logger.info(f"Callback from {user_id}: {callback_data}")
             answer_callback(callback_id)
             
             if callback_data == "quiz_menu":
-                handle_quiz_menu(chat_id, message_id, user_id)
+                profiles = get_user_profiles(user_id)
+                if not profiles:
+                    text = "❌ <b>No Profiles!</b>\n\nCreate one first."
+                    keyboard = [
+                        [{"text": "➕ Add Profile", "callback_data": "add_profile"}],
+                        [{"text": "🔙 Back", "callback_data": "back_menu"}],
+                    ]
+                else:
+                    text = "📋 <b>Select Profile:</b>"
+                    keyboard = []
+                    for name in profiles.keys():
+                        keyboard.append([{"text": f"✅ {name}", "callback_data": f"select_{name}"}])
+                    keyboard.append([{"text": "🔙 Back", "callback_data": "back_menu"}])
+                
+                edit_message(chat_id, message_id, text, keyboard)
+            
             elif callback_data == "profile_menu":
-                handle_profile_menu(chat_id, message_id, user_id)
+                profiles = get_user_profiles(user_id)
+                text = "👤 <b>Profiles</b>\n\n"
+                if profiles:
+                    for name in profiles.keys():
+                        text += f"  • {name}\n"
+                else:
+                    text += "<i>No profiles</i>\n"
+                
+                keyboard = [
+                    [{"text": "➕ Add Profile", "callback_data": "add_profile"}],
+                    [{"text": "🔙 Back", "callback_data": "back_menu"}],
+                ]
+                
+                edit_message(chat_id, message_id, text, keyboard)
+            
             elif callback_data == "add_profile":
-                handle_add_profile(chat_id)
+                send_message(chat_id, "📝 <b>Enter Profile Name:</b>\n\nExample: MainAccount")
+            
             elif callback_data == "back_menu":
-                handle_back_menu(chat_id, message_id, user_id, user_name)
+                send_main_menu(chat_id, user_name)
+            
             elif callback_data == "view_stats":
                 text = "📊 <b>Stats Coming Soon!</b>"
                 keyboard = [
                     [{"text": "🔙 Back", "callback_data": "back_menu"}],
                 ]
                 edit_message(chat_id, message_id, text, keyboard)
+            
+            elif callback_data.startswith("select_"):
+                profile_name = callback_data.replace("select_", "")
+                text = f"✅ <b>Profile Selected!</b>\n\n{profile_name}\n\n🎮 Ready to start?"
+                keyboard = [
+                    [{"text": "▶️ Start Quiz", "callback_data": "run_quiz"}],
+                    [{"text": "🔙 Back", "callback_data": "back_menu"}],
+                ]
+                edit_message(chat_id, message_id, text, keyboard)
+            
+            elif callback_data == "run_quiz":
+                text = "🚀 <b>Starting Quiz...</b>\n\n⏳ Running 3 attempts..."
+                edit_message(chat_id, message_id, text, None)
         
         return "OK", 200
     
@@ -264,13 +243,46 @@ def webhook():
         logger.error(f"Webhook error: {e}")
         return "ERROR", 500
 
+@app.route("/setup", methods=["GET"])
+def setup():
+    """Setup webhook"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        logger.info(f"Setting up webhook: {webhook_url}")
+        
+        # Remove old webhook
+        requests.get(f"{TELEGRAM_API}/deleteWebhook")
+        
+        # Set new webhook
+        data = {"url": webhook_url}
+        response = requests.post(f"{TELEGRAM_API}/setWebhook", json=data)
+        
+        logger.info(f"Setup response: {response.json()}")
+        
+        if response.json().get("ok"):
+            return f"✅ Webhook set to: {webhook_url}", 200
+        else:
+            return f"❌ Failed: {response.json()}", 500
+    
+    except Exception as e:
+        logger.error(f"Setup error: {e}")
+        return f"❌ Error: {str(e)}", 500
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check"""
     return "OK", 200
 
-# ═══════════════════════════════════════════════════════════════════════
-# 🚀 MAIN
+@app.route("/", methods=["GET"])
+def index():
+    """Index page"""
+    return f"""
+    <h1>🤖 India Genius Challenge Bot</h1>
+    <p>Bot Token: {BOT_TOKEN[:20]}...</p>
+    <p><a href="/setup">Setup Webhook</a></p>
+    <p><a href="/health">Health Check</a></p>
+    """, 200
+
 # ═══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":

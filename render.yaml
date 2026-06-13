@@ -1,0 +1,10 @@
+services:
+  - type: worker
+    name: igc-telegram-bot
+    runtime: python
+    pythonVersion: "3.11"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python telegram_bot_igc.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        scope: build,runtime

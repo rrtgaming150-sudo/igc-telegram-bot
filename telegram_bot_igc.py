@@ -321,6 +321,21 @@ def show_cache(chat_id, message_id=None):
 # 🛠 FILE HANDLERS
 # ═══════════════════════════════════════════════════════════════════════
 
+def is_cookie_file(json_data):
+    """Check if the JSON data is a cookie export (array of objects with name/value)."""
+    if isinstance(json_data, list):
+        for item in json_data:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if name in ("__Secure-better-auth.session_token", "__Secure-better-auth.session_data"):
+                    return True
+    elif isinstance(json_data, dict):
+        if "__Secure-better-auth.session_token" in json_data or "__Secure-better-auth.session_data" in json_data:
+            return True
+        if "session_token" in json_data and "session_data" in json_data:
+            return True
+    return False
+
 def parse_cookie_json(data):
     if isinstance(data, list):
         cookies = {}
@@ -377,12 +392,18 @@ def webhook():
                         send_message(chat_id, f"❌ Error reading JSON file: {e}")
                         return "OK", 200
 
-                    # Check state first – if waiting for profile, treat as cookie file
-                    if state.get("waiting_profile_data"):
-                        # Treat as cookie file
+                    # Auto-detect: if it's a cookie file
+                    if is_cookie_file(json_data):
+                        # If waiting for profile data, use that; otherwise just save as profile with default name?
+                        if state.get("waiting_profile_data"):
+                            name = state.get("profile_name")
+                        else:
+                            # No state: ask for profile name
+                            set_user_state(user_id, {"waiting_profile_name": True, "pending_cookie_data": json_data})
+                            send_message(chat_id, "📝 Enter a profile name for these cookies:")
+                            return "OK", 200
                         cookies = parse_cookie_json(json_data)
                         if cookies:
-                            name = state.get("profile_name")
                             save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
                             set_active_profile(user_id, name)
                             clear_user_state(user_id)
@@ -390,16 +411,14 @@ def webhook():
                         else:
                             send_message(chat_id, "❌ Invalid cookie file. Missing session token or data.")
                     else:
-                        # Otherwise, treat as answer cache file (either format)
+                        # Treat as answer cache file (either format)
                         if "answers" in json_data and isinstance(json_data["answers"], dict):
-                            # Format {"answers": {...}}
                             cur = load_cache()
                             cur["answers"].update(json_data["answers"])
                             save_cache(cur)
                             send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers. Total: {len(cur['answers'])}")
                             clear_user_state(user_id)
                         elif isinstance(json_data, list):
-                            # Array format [{"question_id": "...", "correct_answer": "..."}]
                             new_answers = {}
                             for item in json_data:
                                 qid = item.get("question_id")
@@ -415,15 +434,27 @@ def webhook():
                             else:
                                 send_message(chat_id, "❌ Array format invalid. Need [{'question_id': '...', 'correct_answer': '...'}]")
                         else:
-                            send_message(chat_id, "❌ Invalid format. Use {'answers': {...}} or array of question_id/correct_answer.")
+                            send_message(chat_id, "❌ Invalid format. Use cookie export or answer cache format.")
                     return "OK", 200
 
             # Handle text messages
             if text == "/start":
                 main_menu(chat_id, user_name)
             elif state.get("waiting_profile_name"):
-                set_user_state(user_id, {"waiting_profile_data": True, "profile_name": text})
-                send_message(chat_id, "📄 Send your cookie JSON file (exported from browser) or paste the JSON now.")
+                # If we have pending cookie data, use it
+                if "pending_cookie_data" in state:
+                    pending_json = state["pending_cookie_data"]
+                    cookies = parse_cookie_json(pending_json)
+                    if cookies:
+                        save_profile(user_id, text, cookies["session_token"], cookies["session_data"])
+                        set_active_profile(user_id, text)
+                        clear_user_state(user_id)
+                        send_message(chat_id, f"✅ Profile <code>{text}</code> saved from file!")
+                    else:
+                        send_message(chat_id, "❌ Invalid cookie data. Please send the file again.")
+                else:
+                    set_user_state(user_id, {"waiting_profile_data": True, "profile_name": text})
+                    send_message(chat_id, "📄 Send your cookie JSON file (exported from browser) or paste the JSON now.")
             elif state.get("waiting_profile_data") and text:
                 try:
                     json_data = json.loads(text)

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 🎯 INDIA GENIUS CHALLENGE - COMPLETE TELEGRAM BOT
-- Profile management with cookies
-- Import answer cache (JSON)
+- Accepts JSON files (cookies & answer cache)
+- Profile management
 - 3 parallel perfect attempts with before/after stats
-- Webhook ready for Render
 """
 
 import os
@@ -156,7 +155,7 @@ def answer_callback(callback_id, text=None):
         pass
 
 # ═══════════════════════════════════════════════════════════════════════
-# 🌐 API & STATS (Dashboard Scraping + Fallback)
+# 🌐 API & STATS
 # ═══════════════════════════════════════════════════════════════════════
 
 async def fetch_stats(cookies):
@@ -184,24 +183,21 @@ async def fetch_stats(cookies):
             async with session.get(f"{BASE_URL}/dashboard", cookies=cookie_dict, timeout=10) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    # Rank
                     rank_match = re.search(r'Rank[:\s]*([\d,]+)\s*/\s*[\d,]+', html, re.IGNORECASE)
                     if rank_match:
                         stats["rank"] = int(rank_match.group(1).replace(",", ""))
-                    # Genius Points (ELO)
                     gp_match = re.search(r'(?:GP|Genius Points?|ELO)[:\s]*([\d,]+)', html, re.IGNORECASE)
                     if not gp_match:
                         gp_match = re.search(r'>(\d{4})GP<', html)
                     if gp_match:
                         stats["eloScore"] = int(gp_match.group(1).replace(",", ""))
-                    # Challenges completed
                     chall_match = re.search(r'(?:Challenges?|Challenges Played|Total Challenges)[:\s]*([\d,]+)', html, re.IGNORECASE)
                     if chall_match:
                         stats["totalChallenges"] = int(chall_match.group(1).replace(",", ""))
-        except Exception as e:
-            logger.warning(f"Dashboard scrape error: {e}")
+        except:
+            pass
 
-        # 3. Fallback: leaderboard API for rank/challenges
+        # 3. Fallback: leaderboard API
         if not stats["rank"] or not stats["totalChallenges"]:
             try:
                 async with session.get(f"{BASE_URL}/api/leaderboard", cookies=cookie_dict, timeout=8) as resp:
@@ -226,18 +222,15 @@ async def fetch_stats(cookies):
             except:
                 pass
 
-    logger.info(f"Fetched stats: {stats}")
     return stats
 
 async def generate_attempt(cookies, answers_cache):
-    """Generate and answer one perfect attempt using cache"""
     cookie_dict = {
         "__Secure-better-auth.session_token": cookies.get("session_token", ""),
         "__Secure-better-auth.session_data": cookies.get("session_data", ""),
     }
     try:
         async with aiohttp.ClientSession() as session:
-            # Generate
             async with session.post(f"{BASE_URL}/api/attempt/generate", json={}, cookies=cookie_dict, timeout=15) as resp:
                 if resp.status not in (200, 201):
                     return None
@@ -249,8 +242,7 @@ async def generate_attempt(cookies, answers_cache):
                 questions = attempt.get("questions", [])
                 correct = 0
                 total = len(questions)
-                # Answer each question
-                for i, q in enumerate(questions):
+                for q in questions:
                     qid = q.get("_id")
                     ans = answers_cache.get(qid)
                     if not ans:
@@ -271,8 +263,7 @@ async def generate_attempt(cookies, answers_cache):
                                     correct += 1
                     await asyncio.sleep(0.5)
                 return {"correct": correct, "total": total, "id": attempt_id}
-    except Exception as e:
-        logger.error(f"Generate attempt error: {e}")
+    except:
         return None
 
 async def run_parallel_attempts(cookies, answers_cache, n=3):
@@ -323,15 +314,33 @@ def show_profiles(chat_id, user_id, message_id=None):
 def show_cache(chat_id, message_id=None):
     cache = load_cache()
     count = len(cache.get("answers", {}))
-    text = f"📝 <b>Answer Cache</b>\n\n📅 Date: {cache.get('date')}\n📊 Answers: {count}\n\n<b>Import JSON:</b>\n<code>{'{\"answers\": {\"question_id\": \"answer\"}}'}</code>"
-    keyboard = [
-        [{"text": "📥 Import Cache", "callback_data": "import_cache"}],
-        [{"text": "🔙 Back", "callback_data": "back"}],
-    ]
+    text = f"📝 <b>Answer Cache</b>\n\n📅 Date: {cache.get('date')}\n📊 Answers: {count}\n\n<b>Send a JSON file</b> or paste JSON with format:\n<code>{'{\"answers\": {\"question_id\": \"answer\"}}'}</code>"
+    keyboard = [[{"text": "🔙 Back", "callback_data": "back"}]]
     if message_id:
         edit_message(chat_id, message_id, text, keyboard)
     else:
         send_message(chat_id, text, keyboard)
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🛠 FILE HANDLERS
+# ═══════════════════════════════════════════════════════════════════════
+
+def parse_cookie_json(data):
+    """Convert cookie JSON (array or object) to dict with session_token and session_data."""
+    if isinstance(data, list):
+        cookies = {}
+        for item in data:
+            if item.get("name") == "__Secure-better-auth.session_token":
+                cookies["session_token"] = item.get("value")
+            elif item.get("name") == "__Secure-better-auth.session_data":
+                cookies["session_data"] = item.get("value")
+        return cookies
+    elif isinstance(data, dict):
+        return {
+            "session_token": data.get("session_token") or data.get("__Secure-better-auth.session_token"),
+            "session_data": data.get("session_data") or data.get("__Secure-better-auth.session_data"),
+        }
+    return None
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🌐 WEBHOOK
@@ -353,35 +362,80 @@ def webhook():
             text = msg.get("text", "")
             state = get_user_state(user_id)
 
+            # Handle file uploads (JSON files)
+            if "document" in msg:
+                doc = msg["document"]
+                if doc.file_name.endswith(".json"):
+                    file_info = requests.get(f"{TELEGRAM_API}/getFile?file_id={doc['file_id']}").json()
+                    file_path = file_info["result"]["file_path"]
+                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                    file_content = requests.get(file_url).text
+                    try:
+                        json_data = json.loads(file_content)
+                        # Determine if this is for cookie or cache based on user state
+                        if state.get("waiting_profile_data"):
+                            # Expecting cookie JSON
+                            cookies = parse_cookie_json(json_data)
+                            if cookies and cookies.get("session_token") and cookies.get("session_data"):
+                                name = state.get("profile_name")
+                                save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
+                                set_active_profile(user_id, name)
+                                set_user_state(user_id, {})
+                                send_message(chat_id, f"✅ Profile <code>{name}</code> saved from file!")
+                            else:
+                                send_message(chat_id, "❌ Invalid cookie file. Missing session tokens.")
+                        elif state.get("waiting_cache"):
+                            # Expecting answer cache
+                            if "answers" in json_data:
+                                cur = load_cache()
+                                cur["answers"].update(json_data["answers"])
+                                save_cache(cur)
+                                send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers from file. Total: {len(cur['answers'])}")
+                                set_user_state(user_id, {})
+                            else:
+                                send_message(chat_id, "❌ Invalid cache file. Need {'answers': {...}}")
+                        else:
+                            send_message(chat_id, "Please use the menu buttons first, then send the file.")
+                    except Exception as e:
+                        logger.error(f"File parse error: {e}")
+                        send_message(chat_id, f"❌ Error reading JSON file.")
+                    return "OK", 200
+
+            # Handle text messages
             if text == "/start":
                 main_menu(chat_id, user_name)
             elif state.get("waiting_profile_name"):
-                set_user_state(user_id, {"waiting_token": True, "profile_name": text})
-                send_message(chat_id, "🔐 Enter session token (__Secure-better-auth.session_token):")
-            elif state.get("waiting_token"):
-                set_user_state(user_id, {"waiting_data": True, "profile_name": state["profile_name"], "session_token": text})
-                send_message(chat_id, "🔐 Enter session data (__Secure-better-auth.session_data):")
-            elif state.get("waiting_data"):
-                name = state["profile_name"]
-                token = state["session_token"]
-                data_val = text
-                save_profile(user_id, name, token, data_val)
-                set_active_profile(user_id, name)
-                set_user_state(user_id, {})
-                send_message(chat_id, f"✅ Profile <code>{name}</code> saved!")
-            elif state.get("waiting_cache"):
+                set_user_state(user_id, {"waiting_profile_data": True, "profile_name": text})
+                send_message(chat_id, "📄 Send your cookie JSON file (exported from browser) or paste the JSON now.")
+            elif state.get("waiting_profile_data") and text:
+                # User pasted JSON instead of file
                 try:
-                    cache_json = json.loads(text)
-                    if "answers" not in cache_json:
-                        send_message(chat_id, "❌ Invalid: need {'answers': {...}}")
-                    else:
-                        cur = load_cache()
-                        cur["answers"].update(cache_json["answers"])
-                        save_cache(cur)
-                        send_message(chat_id, f"✅ Imported {len(cache_json['answers'])} answers. Total: {len(cur['answers'])}")
+                    json_data = json.loads(text)
+                    cookies = parse_cookie_json(json_data)
+                    if cookies and cookies.get("session_token") and cookies.get("session_data"):
+                        name = state["profile_name"]
+                        save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
+                        set_active_profile(user_id, name)
                         set_user_state(user_id, {})
+                        send_message(chat_id, f"✅ Profile <code>{name}</code> saved!")
+                    else:
+                        send_message(chat_id, "❌ Invalid JSON. Missing session tokens.")
                 except:
-                    send_message(chat_id, "❌ Invalid JSON")
+                    send_message(chat_id, "❌ Invalid JSON. Please send a valid JSON file or text.")
+            elif state.get("waiting_cache"):
+                # User pasted JSON for cache
+                try:
+                    json_data = json.loads(text)
+                    if "answers" in json_data:
+                        cur = load_cache()
+                        cur["answers"].update(json_data["answers"])
+                        save_cache(cur)
+                        send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers. Total: {len(cur['answers'])}")
+                        set_user_state(user_id, {})
+                    else:
+                        send_message(chat_id, "❌ Invalid format. Need {'answers': {...}}")
+                except:
+                    send_message(chat_id, "❌ Invalid JSON.")
             else:
                 send_message(chat_id, "Send /start to begin.")
 
@@ -427,7 +481,7 @@ def webhook():
                 show_cache(chat_id, msg_id)
             elif cb_data == "import_cache":
                 set_user_state(user_id, {"waiting_cache": True})
-                edit_message(chat_id, msg_id, "📥 Paste your answer cache JSON:", [[{"text": "❌ Cancel", "callback_data": "back"}]])
+                edit_message(chat_id, msg_id, "📥 Send your answer cache JSON file or paste JSON:", [[{"text": "❌ Cancel", "callback_data": "back"}]])
             elif cb_data == "stats":
                 profiles = get_user_profiles(user_id)
                 if not profiles:

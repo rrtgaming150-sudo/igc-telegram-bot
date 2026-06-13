@@ -327,19 +327,19 @@ def show_cache(chat_id, message_id=None):
 
 def parse_cookie_json(data):
     """Convert cookie JSON (array or object) to dict with session_token and session_data."""
+    cookies = {}
     if isinstance(data, list):
-        cookies = {}
         for item in data:
             if item.get("name") == "__Secure-better-auth.session_token":
                 cookies["session_token"] = item.get("value")
             elif item.get("name") == "__Secure-better-auth.session_data":
                 cookies["session_data"] = item.get("value")
-        return cookies
     elif isinstance(data, dict):
-        return {
-            "session_token": data.get("session_token") or data.get("__Secure-better-auth.session_token"),
-            "session_data": data.get("session_data") or data.get("__Secure-better-auth.session_data"),
-        }
+        cookies["session_token"] = data.get("session_token") or data.get("__Secure-better-auth.session_token")
+        cookies["session_data"] = data.get("session_data") or data.get("__Secure-better-auth.session_data")
+    # Also try if the data is a string containing the cookie value directly (unlikely but support)
+    if cookies.get("session_token") and cookies.get("session_data"):
+        return cookies
     return None
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -365,40 +365,46 @@ def webhook():
             # Handle file uploads (JSON files)
             if "document" in msg:
                 doc = msg["document"]
-                if doc.file_name.endswith(".json"):
+                if doc["file_name"].endswith(".json"):
+                    # Download file from Telegram
                     file_info = requests.get(f"{TELEGRAM_API}/getFile?file_id={doc['file_id']}").json()
+                    if not file_info.get("ok"):
+                        send_message(chat_id, "❌ Failed to download file.")
+                        return "OK", 200
                     file_path = file_info["result"]["file_path"]
                     file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-                    file_content = requests.get(file_url).text
                     try:
+                        file_content = requests.get(file_url).text
                         json_data = json.loads(file_content)
-                        # Determine if this is for cookie or cache based on user state
-                        if state.get("waiting_profile_data"):
-                            # Expecting cookie JSON
-                            cookies = parse_cookie_json(json_data)
-                            if cookies and cookies.get("session_token") and cookies.get("session_data"):
-                                name = state.get("profile_name")
-                                save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
-                                set_active_profile(user_id, name)
-                                set_user_state(user_id, {})
-                                send_message(chat_id, f"✅ Profile <code>{name}</code> saved from file!")
-                            else:
-                                send_message(chat_id, "❌ Invalid cookie file. Missing session tokens.")
-                        elif state.get("waiting_cache"):
-                            # Expecting answer cache
-                            if "answers" in json_data:
-                                cur = load_cache()
-                                cur["answers"].update(json_data["answers"])
-                                save_cache(cur)
-                                send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers from file. Total: {len(cur['answers'])}")
-                                set_user_state(user_id, {})
-                            else:
-                                send_message(chat_id, "❌ Invalid cache file. Need {'answers': {...}}")
-                        else:
-                            send_message(chat_id, "Please use the menu buttons first, then send the file.")
                     except Exception as e:
-                        logger.error(f"File parse error: {e}")
-                        send_message(chat_id, f"❌ Error reading JSON file.")
+                        logger.error(f"File download/parse error: {e}")
+                        send_message(chat_id, f"❌ Error reading JSON file: {e}")
+                        return "OK", 200
+
+                    # Determine if this is for cookie or cache based on user state
+                    if state.get("waiting_profile_data"):
+                        # Expecting cookie JSON
+                        cookies = parse_cookie_json(json_data)
+                        if cookies and cookies.get("session_token") and cookies.get("session_data"):
+                            name = state.get("profile_name")
+                            save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
+                            set_active_profile(user_id, name)
+                            set_user_state(user_id, {})
+                            send_message(chat_id, f"✅ Profile <code>{name}</code> saved from file!")
+                        else:
+                            send_message(chat_id, "❌ Invalid cookie file. Missing the two session cookies.")
+                    elif state.get("waiting_cache"):
+                        # Expecting answer cache
+                        if "answers" in json_data and isinstance(json_data["answers"], dict):
+                            cur = load_cache()
+                            cur["answers"].update(json_data["answers"])
+                            save_cache(cur)
+                            send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers from file. Total: {len(cur['answers'])}")
+                            set_user_state(user_id, {})
+                        else:
+                            send_message(chat_id, "❌ Invalid cache file. Need {'answers': {...}}")
+                    else:
+                        send_message(chat_id, "Please use the menu buttons first, then send the file.")
                     return "OK", 200
 
             # Handle text messages
@@ -419,14 +425,15 @@ def webhook():
                         set_user_state(user_id, {})
                         send_message(chat_id, f"✅ Profile <code>{name}</code> saved!")
                     else:
-                        send_message(chat_id, "❌ Invalid JSON. Missing session tokens.")
-                except:
+                        send_message(chat_id, "❌ Invalid JSON. Missing session token or data.")
+                except Exception as e:
+                    logger.error(f"JSON parse error: {e}")
                     send_message(chat_id, "❌ Invalid JSON. Please send a valid JSON file or text.")
             elif state.get("waiting_cache"):
                 # User pasted JSON for cache
                 try:
                     json_data = json.loads(text)
-                    if "answers" in json_data:
+                    if "answers" in json_data and isinstance(json_data["answers"], dict):
                         cur = load_cache()
                         cur["answers"].update(json_data["answers"])
                         save_cache(cur)

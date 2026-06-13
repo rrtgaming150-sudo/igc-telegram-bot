@@ -144,40 +144,87 @@ def answer_callback(callback_id, text=None):
         pass
 
 # ═══════════════════════════════════════════════════════════════════════
-# 🌐 API FUNCTIONS
+# 🌐 API FUNCTIONS (UPDATED WITH ROBUST STATS FETCHING)
 # ═══════════════════════════════════════════════════════════════════════
 
 async def fetch_stats(cookies):
-    """Fetch: Rank, ELO Score, Challenges Completed"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Fetch from leaderboard API
+    """
+    Fetch: Rank, ELO Score, Challenges Completed, Attempts Left
+    Uses multiple endpoints for reliability
+    """
+    # Ensure cookies dict is properly formatted
+    cookie_dict = {
+        "__Secure-better-auth.session_token": cookies.get("session_token", ""),
+        "__Secure-better-auth.session_data": cookies.get("session_data", ""),
+    }
+    
+    stats = {
+        "rank": None,
+        "eloScore": None,
+        "totalChallenges": None,
+        "attemptsLeft": None
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        # 1. Get remaining attempts
+        try:
             async with session.get(
-                f"{BASE_URL}/api/leaderboard",
-                cookies=cookies,
+                f"{BASE_URL}/api/attempt/check",
+                cookies=cookie_dict,
                 timeout=aiohttp.ClientTimeout(total=8)
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("success"):
-                        stats_data = data.get("data", {})
-                        return {
-                            "rank": stats_data.get("rank"),
-                            "eloScore": stats_data.get("eloScore"),
-                            "totalChallenges": stats_data.get("totalChallenges"),
-                            "attemptsLeft": stats_data.get("attemptsLeft", 0)
-                        }
-    except Exception as e:
-        logger.error(f"Fetch stats error: {e}")
-    return None
+                        # Different possible structures
+                        played = data.get("data", {})
+                        if isinstance(played, bool):
+                            stats["attemptsLeft"] = 0 if played else 3
+                        elif isinstance(played, dict):
+                            stats["attemptsLeft"] = played.get("attemptsLeft", played.get("remaining", 3))
+        except Exception as e:
+            logger.warning(f"Attempt check failed: {e}")
+
+        # 2. Get leaderboard stats (rank, total challenges)
+        try:
+            async with session.get(
+                f"{BASE_URL}/api/leaderboard",
+                cookies=cookie_dict,
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("success"):
+                        board_data = data.get("data", {})
+                        stats["rank"] = board_data.get("userRank") or board_data.get("rank")
+                        stats["totalChallenges"] = board_data.get("userTotalQuizzesAttempted") or board_data.get("totalPlayed")
+        except Exception as e:
+            logger.warning(f"Leaderboard fetch failed: {e}")
+
+        # 3. Get user profile for ELO
+        try:
+            async with session.get(
+                f"{BASE_URL}/api/users/me",
+                cookies=cookie_dict,
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("success"):
+                        user_data = data.get("data", {})
+                        stats["eloScore"] = user_data.get("elo") or user_data.get("eloScore")
+                        # If totalChallenges still missing, try here
+                        if not stats["totalChallenges"]:
+                            stats["totalChallenges"] = user_data.get("totalQuizzes") or user_data.get("challengesPlayed")
+        except Exception as e:
+            logger.warning(f"User profile fetch failed: {e}")
+
+    logger.info(f"Fetched stats: {stats}")
+    return stats
 
 async def check_attempts(cookies):
-    """Check attempts left"""
-    try:
-        stats = await fetch_stats(cookies)
-        return stats.get("attemptsLeft", 0) if stats else 0
-    except:
-        return 0
+    stats = await fetch_stats(cookies)
+    return stats.get("attemptsLeft", 0)
 
 async def generate_attempt(cookies, answers_cache):
     """Generate and answer a single attempt"""
@@ -187,7 +234,10 @@ async def generate_attempt(cookies, answers_cache):
             async with session.post(
                 f"{BASE_URL}/api/attempt/generate",
                 json={},
-                cookies=cookies,
+                cookies={
+                    "__Secure-better-auth.session_token": cookies.get("session_token", ""),
+                    "__Secure-better-auth.session_data": cookies.get("session_data", ""),
+                },
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status not in (200, 201):
@@ -227,7 +277,10 @@ async def generate_attempt(cookies, answers_cache):
                         async with session.post(
                             f"{BASE_URL}/api/attempt/validate",
                             json=body,
-                            cookies=cookies,
+                            cookies={
+                                "__Secure-better-auth.session_token": cookies.get("session_token", ""),
+                                "__Secure-better-auth.session_data": cookies.get("session_data", ""),
+                            },
                             timeout=aiohttp.ClientTimeout(total=10)
                         ) as v_resp:
                             if v_resp.status == 200:
@@ -498,8 +551,8 @@ def webhook():
                 
                 # Get cookies
                 cookies = {
-                    "__Secure-better-auth.session_token": profile["session_token"],
-                    "__Secure-better-auth.session_data": profile["session_data"],
+                    "session_token": profile["session_token"],
+                    "session_data": profile["session_data"],
                 }
                 
                 # Fetch BEFORE stats
@@ -659,8 +712,8 @@ Ready to fire 3 attempts?
                     return "OK", 200
                 
                 cookies = {
-                    "__Secure-better-auth.session_token": profile["session_token"],
-                    "__Secure-better-auth.session_data": profile["session_data"],
+                    "session_token": profile["session_token"],
+                    "session_data": profile["session_data"],
                 }
                 
                 # Fetch stats

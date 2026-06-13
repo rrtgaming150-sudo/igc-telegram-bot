@@ -377,44 +377,45 @@ def webhook():
                         send_message(chat_id, f"❌ Error reading JSON file: {e}")
                         return "OK", 200
 
-                    # Check if it's an answer cache file (has "answers" or is array)
-                    if "answers" in json_data and isinstance(json_data["answers"], dict):
-                        # Format {"answers": {...}}
-                        cur = load_cache()
-                        cur["answers"].update(json_data["answers"])
-                        save_cache(cur)
-                        send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers. Total: {len(cur['answers'])}")
-                        clear_user_state(user_id)
-                    elif isinstance(json_data, list):
-                        # Array format [{"question_id": "...", "correct_answer": "..."}]
-                        new_answers = {}
-                        for item in json_data:
-                            qid = item.get("question_id")
-                            ans = item.get("correct_answer")
-                            if qid and ans:
-                                new_answers[qid] = ans
-                        if new_answers:
-                            cur = load_cache()
-                            cur["answers"].update(new_answers)
-                            save_cache(cur)
-                            send_message(chat_id, f"✅ Imported {len(new_answers)} answers from array. Total: {len(cur['answers'])}")
+                    # Check state first – if waiting for profile, treat as cookie file
+                    if state.get("waiting_profile_data"):
+                        # Treat as cookie file
+                        cookies = parse_cookie_json(json_data)
+                        if cookies:
+                            name = state.get("profile_name")
+                            save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
+                            set_active_profile(user_id, name)
                             clear_user_state(user_id)
+                            send_message(chat_id, f"✅ Profile <code>{name}</code> saved from file!")
                         else:
-                            send_message(chat_id, "❌ Array format invalid. Need [{'question_id': '...', 'correct_answer': '...'}]")
+                            send_message(chat_id, "❌ Invalid cookie file. Missing session token or data.")
                     else:
-                        # Otherwise, treat as cookie file if state expects it
-                        if state.get("waiting_profile_data"):
-                            cookies = parse_cookie_json(json_data)
-                            if cookies:
-                                name = state.get("profile_name")
-                                save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
-                                set_active_profile(user_id, name)
+                        # Otherwise, treat as answer cache file (either format)
+                        if "answers" in json_data and isinstance(json_data["answers"], dict):
+                            # Format {"answers": {...}}
+                            cur = load_cache()
+                            cur["answers"].update(json_data["answers"])
+                            save_cache(cur)
+                            send_message(chat_id, f"✅ Imported {len(json_data['answers'])} answers. Total: {len(cur['answers'])}")
+                            clear_user_state(user_id)
+                        elif isinstance(json_data, list):
+                            # Array format [{"question_id": "...", "correct_answer": "..."}]
+                            new_answers = {}
+                            for item in json_data:
+                                qid = item.get("question_id")
+                                ans = item.get("correct_answer")
+                                if qid and ans:
+                                    new_answers[qid] = ans
+                            if new_answers:
+                                cur = load_cache()
+                                cur["answers"].update(new_answers)
+                                save_cache(cur)
+                                send_message(chat_id, f"✅ Imported {len(new_answers)} answers from array. Total: {len(cur['answers'])}")
                                 clear_user_state(user_id)
-                                send_message(chat_id, f"✅ Profile <code>{name}</code> saved from file!")
                             else:
-                                send_message(chat_id, "❌ Invalid cookie file. Missing session token or data.")
+                                send_message(chat_id, "❌ Array format invalid. Need [{'question_id': '...', 'correct_answer': '...'}]")
                         else:
-                            send_message(chat_id, "❌ Invalid format. Use {'answers': {...}} or [{'question_id': '...', 'correct_answer': '...'}] for answers, or a cookie file.")
+                            send_message(chat_id, "❌ Invalid format. Use {'answers': {...}} or array of question_id/correct_answer.")
                     return "OK", 200
 
             # Handle text messages

@@ -147,17 +147,32 @@ def answer_callback(callback_id, text=None):
 # 🌐 API FUNCTIONS (UPDATED WITH ROBUST STATS FETCHING)
 # ═══════════════════════════════════════════════════════════════════════
 
+def find_value(data, *keys):
+    """Recursively search for a key in nested dict/list."""
+    if isinstance(data, dict):
+        for k in keys:
+            if k in data:
+                return data[k]
+        for v in data.values():
+            r = find_value(v, *keys)
+            if r is not None:
+                return r
+    elif isinstance(data, list):
+        for item in data:
+            r = find_value(item, *keys)
+            if r is not None:
+                return r
+    return None
+
 async def fetch_stats(cookies):
     """
     Fetch: Rank, ELO Score, Challenges Completed, Attempts Left
-    Uses multiple endpoints for reliability
+    Uses multiple endpoints and recursive key search (from genius script).
     """
-    # Ensure cookies dict is properly formatted
     cookie_dict = {
         "__Secure-better-auth.session_token": cookies.get("session_token", ""),
         "__Secure-better-auth.session_data": cookies.get("session_data", ""),
     }
-    
     stats = {
         "rank": None,
         "eloScore": None,
@@ -166,58 +181,63 @@ async def fetch_stats(cookies):
     }
     
     async with aiohttp.ClientSession() as session:
-        # 1. Get remaining attempts
+        # 1. Attempts left
         try:
-            async with session.get(
-                f"{BASE_URL}/api/attempt/check",
-                cookies=cookie_dict,
-                timeout=aiohttp.ClientTimeout(total=8)
-            ) as resp:
+            async with session.get(f"{BASE_URL}/api/attempt/check", cookies=cookie_dict, timeout=8) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("success"):
-                        # Different possible structures
-                        played = data.get("data", {})
-                        if isinstance(played, bool):
-                            stats["attemptsLeft"] = 0 if played else 3
-                        elif isinstance(played, dict):
-                            stats["attemptsLeft"] = played.get("attemptsLeft", played.get("remaining", 3))
-        except Exception as e:
-            logger.warning(f"Attempt check failed: {e}")
+                        has_played = data.get("data", False)
+                        stats["attemptsLeft"] = 0 if has_played else 3
+        except:
+            pass
 
-        # 2. Get leaderboard stats (rank, total challenges)
+        # 2. Leaderboard (rank & total challenges)
         try:
-            async with session.get(
-                f"{BASE_URL}/api/leaderboard",
-                cookies=cookie_dict,
-                timeout=aiohttp.ClientTimeout(total=8)
-            ) as resp:
+            async with session.get(f"{BASE_URL}/api/leaderboard", cookies=cookie_dict, timeout=8) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("success"):
-                        board_data = data.get("data", {})
-                        stats["rank"] = board_data.get("userRank") or board_data.get("rank")
-                        stats["totalChallenges"] = board_data.get("userTotalQuizzesAttempted") or board_data.get("totalPlayed")
-        except Exception as e:
-            logger.warning(f"Leaderboard fetch failed: {e}")
+                        board = data.get("data", {})
+                        stats["rank"] = board.get("userRank") or board.get("rank")
+                        stats["totalChallenges"] = board.get("userTotalQuizzesAttempted") or board.get("totalPlayed")
+        except:
+            pass
 
-        # 3. Get user profile for ELO
-        try:
-            async with session.get(
-                f"{BASE_URL}/api/users/me",
-                cookies=cookie_dict,
-                timeout=aiohttp.ClientTimeout(total=8)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("success"):
-                        user_data = data.get("data", {})
-                        stats["eloScore"] = user_data.get("elo") or user_data.get("eloScore")
-                        # If totalChallenges still missing, try here
-                        if not stats["totalChallenges"]:
-                            stats["totalChallenges"] = user_data.get("totalQuizzes") or user_data.get("challengesPlayed")
-        except Exception as e:
-            logger.warning(f"User profile fetch failed: {e}")
+        # 3. User details (ELO & played) – try multiple endpoints
+        user_endpoints = ["/user/me", "/me", "/user/profile", "/profile"]
+        for ep in user_endpoints:
+            try:
+                async with session.get(f"{BASE_URL}{ep}", cookies=cookie_dict, timeout=8) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if not data.get("success"):
+                            data = data.get("data", data)
+                        elo = find_value(data, "elo", "eloScore", "elo_score", "rating")
+                        played = find_value(data, "totalChallengesPlayed",
+                                            "total_challenges_played", "challengesPlayed",
+                                            "challenges_played", "gamesPlayed",
+                                            "totalGames", "total_games", "played")
+                        if elo is not None:
+                            stats["eloScore"] = elo
+                        if played is not None:
+                            stats["totalChallenges"] = stats["totalChallenges"] or played
+                        if stats["eloScore"] is not None:
+                            break
+            except:
+                pass
+
+        # Fallback: try POST /api/users/me (if GET didn't work)
+        if stats["eloScore"] is None:
+            try:
+                async with session.post(f"{BASE_URL}/api/users/me", cookies=cookie_dict, timeout=8) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("success"):
+                            user = data.get("data", {})
+                            stats["eloScore"] = user.get("elo") or user.get("eloScore")
+            except:
+                pass
 
     logger.info(f"Fetched stats: {stats}")
     return stats

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-🎯 INDIA GENIUS CHALLENGE - SIMPLIFIED BOT
+🎯 INDIA GENIUS CHALLENGE - FINAL BOT
 - Upload JSON (cookies + answers)
 - Save profiles
+- Test cookies validity
 - Run 3 parallel attempts
 - Show: Attempts submitted + Correct answers
 """
@@ -146,6 +147,58 @@ def answer_callback(callback_id, text=None):
         pass
 
 # ═══════════════════════════════════════════════════════════════════════
+# 🔐 COOKIE TESTING
+# ═══════════════════════════════════════════════════════════════════════
+
+async def test_cookies(session_token, session_data):
+    """Test if cookies are valid and API works"""
+    cookies = {
+        "__Secure-better-auth.session_token": session_token,
+        "__Secure-better-auth.session_data": session_data,
+    }
+    
+    result = {
+        "login_ok": False,
+        "api_ok": False,
+        "questions": 0,
+        "error": None
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        # Test 1: Check if logged in
+        try:
+            async with session.get(f"{BASE_URL}/dashboard", cookies=cookies, timeout=10) as resp:
+                if resp.status == 200:
+                    result["login_ok"] = True
+                else:
+                    result["error"] = f"Login failed: Status {resp.status}"
+        except Exception as e:
+            result["error"] = f"Login error: {str(e)[:50]}"
+        
+        # Test 2: Check API
+        if result["login_ok"]:
+            try:
+                async with session.post(f"{BASE_URL}/api/attempt/generate", 
+                                       json={}, 
+                                       cookies=cookies, 
+                                       timeout=15) as resp:
+                    if resp.status in (200, 201):
+                        data = await resp.json()
+                        if data.get("success"):
+                            attempt = data.get("data", {})
+                            questions = attempt.get("questions", [])
+                            result["api_ok"] = True
+                            result["questions"] = len(questions)
+                        else:
+                            result["error"] = f"API error: {data.get('message', 'Unknown')}"
+                    else:
+                        result["error"] = f"API failed: Status {resp.status}"
+            except Exception as e:
+                result["error"] = f"API error: {str(e)[:50]}"
+    
+    return result
+
+# ═══════════════════════════════════════════════════════════════════════
 # 🌐 QUIZ API
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -160,6 +213,7 @@ async def generate_attempt(cookies, answers_cache):
             async with session.post(f"{BASE_URL}/api/attempt/generate", json={}, cookies=cookie_dict, timeout=15) as resp:
                 if resp.status not in (200, 201):
                     return None
+                
                 data = await resp.json()
                 if not data.get("success"):
                     return None
@@ -226,6 +280,7 @@ def main_menu(chat_id, user_name):
         [{"text": "🎮 Start Quiz", "callback_data": "start_quiz"}],
         [{"text": "👤 Profiles", "callback_data": "profiles"}],
         [{"text": "📝 Answers", "callback_data": "cache"}],
+        [{"text": "🔧 Test Cookies", "callback_data": "test_cookies"}],
     ]
     send_message(chat_id, text, keyboard)
 
@@ -387,6 +442,52 @@ def webhook():
                         send_message(chat_id, "Invalid format.")
                 except:
                     send_message(chat_id, "Invalid JSON.")
+            elif state.get("waiting_test_token"):
+                set_user_state(user_id, {"waiting_test_token": False, "waiting_test_data": True, "test_token": text})
+                send_message(chat_id, "Paste session data:")
+            elif state.get("waiting_test_data"):
+                token = state.get("test_token")
+                data_val = text
+                clear_user_state(user_id)
+                
+                send_message(chat_id, "⏳ Testing cookies...")
+                
+                def test():
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        result = loop.run_until_complete(test_cookies(token, data_val))
+                        loop.close()
+                        
+                        if result["login_ok"] and result["api_ok"]:
+                            msg = f"""✅ <b>COOKIES VALID!</b>
+
+✅ Login: OK
+✅ API: OK
+📊 Questions: {result['questions']}
+
+Ready to use!"""
+                        elif result["login_ok"]:
+                            msg = f"""⚠️ <b>PARTIAL ISSUE</b>
+
+✅ Login: OK
+❌ API: FAILED
+Error: {result['error']}
+
+Try refreshing cookies."""
+                        else:
+                            msg = f"""❌ <b>COOKIES INVALID</b>
+
+❌ Login: FAILED
+Error: {result['error']}
+
+Export fresh cookies from browser."""
+                        
+                        send_message(chat_id, msg, [[{"text": "Menu", "callback_data": "back"}]])
+                    except Exception as e:
+                        send_message(chat_id, f"❌ Error: {e}", [[{"text": "Back", "callback_data": "back"}]])
+                
+                threading.Thread(target=test, daemon=True).start()
             else:
                 send_message(chat_id, "Send /start")
 
@@ -428,6 +529,9 @@ def webhook():
                     edit_message(chat_id, msg_id, "Not found", [[{"text": "Back", "callback_data": "profiles"}]])
             elif cb_data == "cache":
                 show_cache(chat_id, msg_id)
+            elif cb_data == "test_cookies":
+                set_user_state(user_id, {"waiting_test_token": True})
+                edit_message(chat_id, msg_id, "Paste session token:", [[{"text": "Cancel", "callback_data": "back"}]])
             elif cb_data == "back":
                 main_menu(chat_id, user_name)
             elif cb_data.startswith("sel_"):
@@ -471,13 +575,13 @@ def webhook():
                         
                         edit_message(chat_id, msg_id, text, [[{"text": "Menu", "callback_data": "back"}]])
                     except Exception as e:
-                        edit_message(chat_id, msg_id, f"❌ Error: {e}", [[{"text": "Back", "callback_data": "back"}]])
+                        edit_message(chat_id, msg_id, f"❌ Error: {str(e)[:100]}", [[{"text": "Back", "callback_data": "back"}]])
                 
                 threading.Thread(target=run, daemon=True).start()
 
         return "OK", 200
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Webhook error: {e}")
         return "ERROR", 500
 
 @app.route("/setup", methods=["GET"])
@@ -498,7 +602,7 @@ def health():
 
 @app.route("/", methods=["GET"])
 def index():
-    return "<h1>🤖 IGC Bot</h1><p><a href='/setup'>Setup</a></p>", 200
+    return "<h1>🤖 IGC Bot - Final Version</h1><p><a href='/setup'>Setup</a></p>", 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))

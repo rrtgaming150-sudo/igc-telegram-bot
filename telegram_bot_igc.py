@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
-🎯 INDIA GENIUS CHALLENGE - COMPLETE TELEGRAM BOT (FIXED)
-- File upload support for JSON
-- Profile management
-- 3 parallel attempts with BEFORE/AFTER stats
+🎯 INDIA GENIUS CHALLENGE - COMPLETE TELEGRAM BOT (FIXED ATTEMPTS)
 """
 
 import os
@@ -161,43 +158,65 @@ def answer_callback(callback_id, text=None):
         pass
 
 # ═══════════════════════════════════════════════════════════════════════
-# 🌐 API & STATS
+# 🌐 API & STATS - FIXED ATTEMPTS
 # ═══════════════════════════════════════════════════════════════════════
 
 async def fetch_stats(cookies):
-    """Fetch stats with proper None handling"""
+    """Fetch stats with proper attempts handling"""
     cookie_dict = {
         "__Secure-better-auth.session_token": cookies.get("session_token", ""),
         "__Secure-better-auth.session_data": cookies.get("session_data", ""),
     }
     
+    # Default values
     stats = {
         "rank": 0,
         "eloScore": 0,
         "totalChallenges": 0,
-        "attemptsLeft": 0
+        "attemptsLeft": 3  # Default to 3 attempts
     }
     
     async with aiohttp.ClientSession() as session:
+        # Fetch dashboard
         try:
             async with session.get(f"{BASE_URL}/dashboard", cookies=cookie_dict, timeout=10) as resp:
                 if resp.status == 200:
                     html = await resp.text()
                     
+                    # Parse Rank
                     rank_match = re.search(r'Rank[:\s]*([\d,]+)\s*/\s*[\d,]+', html, re.IGNORECASE)
                     if rank_match:
                         stats["rank"] = int(rank_match.group(1).replace(",", ""))
                     
+                    # Parse ELO/GP
                     gp_match = re.search(r'(?:GP|ELO|Score)[:\s]*([\d,]+)', html, re.IGNORECASE)
                     if gp_match:
                         stats["eloScore"] = int(gp_match.group(1).replace(",", ""))
                     
+                    # Parse Challenges
                     chall_match = re.search(r'(?:Challenge|Played)[:\s]*([\d,]+)', html, re.IGNORECASE)
                     if chall_match:
                         stats["totalChallenges"] = int(chall_match.group(1).replace(",", ""))
+                    
+                    # Parse Attempts - look for multiple patterns
+                    attempts_patterns = [
+                        r'Attempt[s]?[:\s]*(\d+)',
+                        r'(?:Daily|Remaining)[:\s]*(\d+)',
+                        r'>(\d+)\s*(?:Attempt|attempt)',
+                        r'(\d+)\s*left',
+                    ]
+                    
+                    for pattern in attempts_patterns:
+                        attempts_match = re.search(pattern, html, re.IGNORECASE)
+                        if attempts_match:
+                            attempts_val = int(attempts_match.group(1))
+                            if attempts_val > 0:
+                                stats["attemptsLeft"] = attempts_val
+                                break
         except Exception as e:
             logger.error(f"Dashboard parse error: {e}")
         
+        # Fallback to API
         try:
             async with session.get(f"{BASE_URL}/api/leaderboard", cookies=cookie_dict, timeout=8) as resp:
                 if resp.status == 200:
@@ -207,12 +226,15 @@ async def fetch_stats(cookies):
                         stats["rank"] = stats["rank"] or board.get("rank") or board.get("userRank") or 0
                         stats["totalChallenges"] = stats["totalChallenges"] or board.get("totalChallenges") or 0
                         stats["eloScore"] = stats["eloScore"] or board.get("eloScore") or 0
+                        stats["attemptsLeft"] = board.get("attemptsLeft") or stats["attemptsLeft"] or 3
         except:
             pass
     
+    # Ensure valid values
     stats["rank"] = stats["rank"] or 0
     stats["eloScore"] = stats["eloScore"] or 0
     stats["totalChallenges"] = stats["totalChallenges"] or 0
+    stats["attemptsLeft"] = stats["attemptsLeft"] or 3  # Default to 3 if unknown
     
     return stats
 
@@ -320,7 +342,7 @@ def show_profiles(chat_id, user_id, message_id=None):
 def show_cache(chat_id, message_id=None):
     cache = load_cache()
     count = len(cache.get("answers", {}))
-    text = f"📝 <b>Answer Cache</b>\n\n📅 Date: {cache.get('date')}\n📊 Answers: {count}\n\n<b>Send JSON file or paste:</b>\n{{\"answers\": {{\"id\": \"answer\"}}}}\nor array format"
+    text = f"📝 <b>Answer Cache</b>\n\n📅 Date: {cache.get('date')}\n📊 Answers: {count}\n\n<b>Send JSON file or paste</b>"
     keyboard = [[{"text": "🔙 Back", "callback_data": "back"}]]
     if message_id:
         edit_message(chat_id, message_id, text, keyboard)
@@ -567,7 +589,7 @@ def webhook():
                 asyncio.set_event_loop(loop)
                 stats = loop.run_until_complete(fetch_stats(cookies))
                 loop.close()
-                text = f"Stats - {name}\n\nRank: {stats.get('rank', 0) or 'N/A'}\nELO: {stats.get('eloScore', 0) or 'N/A'}\nChallenges: {stats.get('totalChallenges', 0) or 'N/A'}"
+                text = f"Stats - {name}\n\nRank: {stats.get('rank', 0) or 'N/A'}\nELO: {stats.get('eloScore', 0) or 'N/A'}\nChallenges: {stats.get('totalChallenges', 0) or 'N/A'}\nAttempts: {stats.get('attemptsLeft', 3) or 3}"
                 edit_message(chat_id, msg_id, text, [[{"text": "Back", "callback_data": "stats"}]])
             elif cb_data == "back":
                 main_menu(chat_id, user_name)
@@ -587,11 +609,7 @@ def webhook():
                 rank = stats.get("rank") or 0
                 elo = stats.get("eloScore") or 0
                 chall = stats.get("totalChallenges") or 0
-                attempts = stats.get("attemptsLeft") or 0
-                
-                if attempts == 0:
-                    edit_message(chat_id, msg_id, f"No attempts left. Come back tomorrow.", [[{"text": "Back", "callback_data": "back"}]])
-                    return "OK", 200
+                attempts = stats.get("attemptsLeft") or 3  # Default to 3
                 
                 text = f"Profile: {name}\n\nBEFORE Stats:\nRank: {rank}\nELO: {elo}\nChallenges: {chall}\nAttempts: {attempts}\n\nReady to run?"
                 keyboard = [[{"text": "Run Quiz", "callback_data": f"run_{name}"}], [{"text": "Back", "callback_data": "back"}]]

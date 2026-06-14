@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🎯 INDIA GENIUS CHALLENGE - FINAL BOT (FIXED)
+🎯 INDIA GENIUS CHALLENGE - FINAL BOT
 - Upload JSON (cookies + answers)
 - Save profiles
 - Test cookies validity (accepts file or manual paste)
@@ -39,19 +39,23 @@ app = Flask(__name__)
 # ========== BROWSER HEADERS ==========
 def get_headers():
     user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     ]
     return {
         "User-Agent": random.choice(user_agents),
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Content-Type": "application/json",
         "Origin": BASE_URL,
         "Referer": f"{BASE_URL}/quiz",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
 
 # ========== STORAGE ==========
@@ -174,6 +178,7 @@ async def test_cookies_from_dict(cookie_dict):
         except Exception as e:
             result["error"] = str(e)
         if result["login_ok"]:
+            await asyncio.sleep(0.5)
             try:
                 async with session.post(f"{BASE_URL}/api/attempt/generate", headers=get_headers(), json={}, cookies=cookies, timeout=15) as resp:
                     if resp.status in (200, 201):
@@ -430,7 +435,6 @@ def webhook():
                 except:
                     send_message(chat_id, "❌ Invalid JSON. Send a file or paste correctly.")
             elif state.get("waiting_test_token"):
-                # User chose manual paste
                 set_user_state(user_id, {"waiting_test_data": True, "test_token": text})
                 send_message(chat_id, "🔐 Paste session data:")
             elif state.get("waiting_test_data"):
@@ -497,7 +501,6 @@ def webhook():
             elif cb_data == "cache":
                 show_cache(chat_id, msg_id)
             elif cb_data == "test_cookies":
-                # Offer two options: send file or paste manually
                 keyboard = [
                     [{"text": "📄 Send Cookie File", "callback_data": "test_file"}],
                     [{"text": "✏️ Paste Manually", "callback_data": "test_paste"}],

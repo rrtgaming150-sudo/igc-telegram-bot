@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-🎯 INDIA GENIUS CHALLENGE - FINAL BOT
-- Upload JSON (cookies + answers)
-- Save profiles
-- Test cookies validity (accepts file or manual paste)
-- Run 3 parallel attempts with proper headers
+🎯 INDIA GENIUS CHALLENGE - TELEGRAM BOT
+Based on the working parallel triple attempt script
 """
 
 import os
@@ -12,7 +9,6 @@ import json
 import logging
 import asyncio
 import aiohttp
-import random
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request
@@ -36,29 +32,19 @@ USER_STATE_FILE = STORAGE_DIR / "user_states.json"
 
 app = Flask(__name__)
 
-# ========== BROWSER HEADERS ==========
-def get_headers():
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    ]
-    return {
-        "User-Agent": random.choice(user_agents),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Content-Type": "application/json",
-        "Origin": BASE_URL,
-        "Referer": f"{BASE_URL}/quiz",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "Connection": "keep-alive",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
+HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "en-US,en;q=0.9",
+    "content-type": "application/json",
+    "origin": BASE_URL,
+    "referer": f"{BASE_URL}/quiz",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
 
-# ========== STORAGE ==========
+# ═══════════════════════════════════════════════════════════════════════
+# 💾 STORAGE
+# ═══════════════════════════════════════════════════════════════════════
+
 def load_profiles():
     if PROFILES_FILE.exists():
         try:
@@ -75,8 +61,8 @@ def load_cache():
         try:
             return json.loads(CACHE_FILE.read_text())
         except:
-            return {"date": datetime.now().strftime("%Y-%m-%d"), "answers": {}}
-    return {"date": datetime.now().strftime("%Y-%m-%d"), "answers": {}}
+            return {}
+    return {}
 
 def save_cache(data):
     CACHE_FILE.write_text(json.dumps(data, indent=2))
@@ -115,7 +101,6 @@ def save_profile(user_id, profile_name, session_token, session_data):
     profiles[user_id_str][profile_name] = {
         "session_token": session_token,
         "session_data": session_data,
-        "created": datetime.now().isoformat()
     }
     save_profiles(profiles)
 
@@ -132,7 +117,10 @@ def delete_profile(user_id, profile_name):
         return True
     return False
 
-# ========== TELEGRAM HELPERS ==========
+# ═══════════════════════════════════════════════════════════════════════
+# 📱 TELEGRAM API
+# ═══════════════════════════════════════════════════════════════════════
+
 def send_message(chat_id, text, keyboard=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if keyboard:
@@ -153,113 +141,141 @@ def edit_message(chat_id, message_id, text, keyboard=None):
         logger.error(f"Edit error: {e}")
         return None
 
-def answer_callback(callback_id, text=None):
-    data = {"callback_query_id": callback_id}
-    if text:
-        data["text"] = text
+def answer_callback(callback_id):
     try:
-        requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json=data, timeout=10)
+        requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=10)
     except:
         pass
 
-# ========== COOKIE TEST ==========
-async def test_cookies_from_dict(cookie_dict):
-    cookies = {
-        "__Secure-better-auth.session_token": cookie_dict.get("session_token", ""),
-        "__Secure-better-auth.session_data": cookie_dict.get("session_data", ""),
-    }
-    result = {"login_ok": False, "api_ok": False, "questions": 0, "error": None}
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(f"{BASE_URL}/dashboard", headers=get_headers(), cookies=cookies, timeout=10) as resp:
-                result["login_ok"] = (resp.status == 200)
-                if not result["login_ok"]:
-                    result["error"] = f"Login failed: {resp.status}"
-        except Exception as e:
-            result["error"] = str(e)
-        if result["login_ok"]:
-            await asyncio.sleep(0.5)
-            try:
-                async with session.post(f"{BASE_URL}/api/attempt/generate", headers=get_headers(), json={}, cookies=cookies, timeout=15) as resp:
-                    if resp.status in (200, 201):
-                        data = await resp.json()
-                        if data.get("success"):
-                            result["api_ok"] = True
-                            result["questions"] = len(data.get("data", {}).get("questions", []))
-                        else:
-                            result["error"] = f"API error: {data.get('message')}"
-                    else:
-                        result["error"] = f"API status: {resp.status}"
-            except Exception as e:
-                result["error"] = str(e)
-    return result
+# ═══════════════════════════════════════════════════════════════════════
+# 🌐 QUIZ LOGIC - Based on the working script
+# ═══════════════════════════════════════════════════════════════════════
 
-# ========== QUIZ ATTEMPT ==========
-async def generate_attempt(cookies, answers_cache):
-    cookie_dict = {
-        "__Secure-better-auth.session_token": cookies.get("session_token", ""),
-        "__Secure-better-auth.session_data": cookies.get("session_data", ""),
-    }
-    headers = get_headers()
+async def generate_attempt(session, attempt_num):
+    """Generate a single attempt"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{BASE_URL}/api/attempt/generate", headers=headers, json={}, cookies=cookie_dict, timeout=15) as resp:
-                if resp.status not in (200, 201):
-                    logger.error(f"Generate failed: {resp.status}")
-                    return None
-                data = await resp.json()
-                if not data.get("success"):
-                    logger.error(f"Generate success false: {data}")
-                    return None
-                attempt = data.get("data", {})
-                attempt_id = attempt.get("_id")
-                questions = attempt.get("questions", [])
-                correct = 0
-                total = len(questions)
-                for q in questions:
-                    qid = q.get("_id")
-                    ans = answers_cache.get(qid)
-                    if not ans:
-                        continue
-                    body = {
-                        "_id": attempt_id,
-                        "questionId": qid,
-                        "question": "",
-                        "selectedAnswer": ans,
-                        "timeSpent": 3,
-                    }
-                    try:
-                        async with session.post(f"{BASE_URL}/api/attempt/validate", headers=headers, json=body, cookies=cookie_dict, timeout=10) as v_resp:
-                            if v_resp.status == 200:
-                                v_data = await v_resp.json()
-                                if v_data.get("success"):
-                                    attempted = v_data.get("data", {}).get("QuestionsAttempted", [])
-                                    if attempted and attempted[-1].get("isCorrect"):
-                                        correct += 1
-                        await asyncio.sleep(0.3)
-                    except Exception as e:
-                        logger.error(f"Validate error: {e}")
-                return {"correct": correct, "total": total}
+        async with session.post(f"{BASE_URL}/api/attempt/generate", json={}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status not in (200, 201):
+                return None
+            
+            data = await resp.json()
+            if not data.get("success"):
+                return None
+            
+            attempt = data["data"]["attempt"]
+            questions = data["data"]["quiz"]["Questions"]
+            
+            return {
+                "num": attempt_num,
+                "attemptId": attempt["_id"],
+                "questionSet": attempt["QuestionSet"],
+                "questions": questions,
+                "q_by_id": {q["_id"]: q for q in questions},
+                "correct": 0,
+            }
     except Exception as e:
-        logger.error(f"Generate attempt error: {e}")
-        return None
+        logger.error(f"Generate error: {e}")
+    
+    return None
 
-async def run_parallel_attempts(cookies, answers_cache, n=3):
-    tasks = [generate_attempt(cookies, answers_cache) for _ in range(n)]
-    results = await asyncio.gather(*tasks)
-    total_correct = sum(r["correct"] for r in results if r)
-    total_questions = sum(r["total"] for r in results if r)
-    attempts_completed = len([r for r in results if r])
-    return {"attempts": attempts_completed, "correct": total_correct, "total": total_questions}
+async def answer_question(session, attempt, question_idx, question_id, ANSWERS):
+    """Answer a single question"""
+    question = attempt["q_by_id"].get(question_id, {})
+    answer_text = ANSWERS.get(question_id)
+    
+    if not answer_text:
+        return False
+    
+    body = {
+        "_id": attempt["attemptId"],
+        "questionId": question_id,
+        "question": question.get("question", ""),
+        "selectedAnswer": answer_text,
+        "timeSpent": 3,
+    }
+    
+    try:
+        async with session.post(f"{BASE_URL}/api/attempt/validate", json=body, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("success"):
+                    attempted = data.get("data", {}).get("QuestionsAttempted", [])
+                    last = attempted[-1] if attempted else {}
+                    if last.get("isCorrect", False):
+                        attempt["correct"] += 1
+                        return True
+            await asyncio.sleep(0.8)
+            return False
+    except Exception as e:
+        logger.error(f"Answer error: {e}")
+        await asyncio.sleep(0.8)
+    
+    return False
 
-# ========== HANDLERS ==========
+async def run_triple_parallel(cookie_str, ANSWERS):
+    """Run 3 parallel attempts - based on working script"""
+    cookies = {}
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            cookies[k.strip()] = v.strip()
+    
+    connector = aiohttp.TCPConnector(limit=20)
+    session = aiohttp.ClientSession(connector=connector, headers=HEADERS, cookies=cookies)
+    
+    try:
+        # Generate 3 attempts
+        attempt_tasks = [generate_attempt(session, i+1) for i in range(3)]
+        attempts = await asyncio.gather(*attempt_tasks)
+        attempts = [a for a in attempts if a is not None]
+        
+        if not attempts:
+            return {"attempts": 0, "correct": 0, "total": 0, "error": "Failed to generate attempts"}
+        
+        # Answer questions across attempts
+        max_questions = max(len(att["questionSet"]) for att in attempts)
+        
+        for q_idx in range(max_questions):
+            answer_tasks = []
+            for att in attempts:
+                if q_idx < len(att["questionSet"]):
+                    qid = att["questionSet"][q_idx]
+                    answer_tasks.append(answer_question(session, att, q_idx, qid, ANSWERS))
+                else:
+                    answer_tasks.append(asyncio.sleep(0))
+            
+            await asyncio.gather(*answer_tasks)
+            await asyncio.sleep(0.8)
+        
+        # Calculate totals
+        total_correct = sum(att["correct"] for att in attempts)
+        total_questions = sum(len(att["questionSet"]) for att in attempts)
+        
+        return {
+            "attempts": len(attempts),
+            "correct": total_correct,
+            "total": total_questions,
+            "per_attempt": [{"num": a["num"], "correct": a["correct"], "total": len(a["questionSet"])} for a in attempts],
+        }
+    
+    except Exception as e:
+        logger.error(f"Run error: {e}")
+        return {"attempts": 0, "correct": 0, "total": 0, "error": str(e)}
+    
+    finally:
+        await session.close()
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🎯 HANDLERS
+# ═══════════════════════════════════════════════════════════════════════
+
 def main_menu(chat_id, user_name):
-    text = f"🎯 <b>INDIA GENIUS CHALLENGE BOT</b>\n\n👋 Hi {user_name}!\n\nChoose:"
+    text = f"🎯 <b>IGC PARALLEL BOT</b>\n\n👋 Hi {user_name}!\n\nChoose:"
     keyboard = [
         [{"text": "🎮 Start Quiz", "callback_data": "start_quiz"}],
         [{"text": "👤 Profiles", "callback_data": "profiles"}],
         [{"text": "📝 Answers", "callback_data": "cache"}],
-        [{"text": "🔧 Test Cookies", "callback_data": "test_cookies"}],
     ]
     send_message(chat_id, text, keyboard)
 
@@ -282,7 +298,7 @@ def show_profiles(chat_id, user_id, message_id=None):
 
 def show_cache(chat_id, message_id=None):
     cache = load_cache()
-    count = len(cache.get("answers", {}))
+    count = len(cache)
     text = f"📝 <b>Answer Cache</b>\n\nAnswers: {count}\n\nSend JSON file"
     keyboard = [[{"text": "🔙 Back", "callback_data": "back"}]]
     if message_id:
@@ -290,12 +306,16 @@ def show_cache(chat_id, message_id=None):
     else:
         send_message(chat_id, text, keyboard)
 
-# ========== FILE PARSING ==========
+# ═══════════════════════════════════════════════════════════════════════
+# 🛠 FILE HANDLERS
+# ═══════════════════════════════════════════════════════════════════════
+
 def is_cookie_file(json_data):
     if isinstance(json_data, list):
         for item in json_data:
-            if isinstance(item, dict) and item.get("name") in ("__Secure-better-auth.session_token", "__Secure-better-auth.session_data"):
-                return True
+            if isinstance(item, dict):
+                if item.get("name") in ("__Secure-better-auth.session_token", "__Secure-better-auth.session_data"):
+                    return True
     elif isinstance(json_data, dict):
         if "__Secure-better-auth.session_token" in json_data or "session_token" in json_data:
             return True
@@ -318,11 +338,33 @@ def parse_cookie_json(data):
             return {"session_token": token, "session_data": session_data}
     return None
 
-# ========== WEBHOOK ==========
+def parse_answers_json(json_data):
+    """Parse answers from both formats"""
+    answers = {}
+    
+    if isinstance(json_data, dict) and "answers" in json_data:
+        # Format: {"answers": {"id": "answer"}}
+        if isinstance(json_data["answers"], dict):
+            answers.update(json_data["answers"])
+    elif isinstance(json_data, list):
+        # Format: [{"question_id": "...", "correct_answer": "..."}]
+        for item in json_data:
+            qid = item.get("question_id") or item.get("_id") or item.get("id")
+            ans = item.get("correct_answer") or item.get("answer")
+            if qid and ans:
+                answers[qid] = ans
+    
+    return answers
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🌐 WEBHOOK
+# ═══════════════════════════════════════════════════════════════════════
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json()
+        
         if "message" in data:
             msg = data["message"]
             chat_id = msg["chat"]["id"]
@@ -331,82 +373,52 @@ def webhook():
             text = msg.get("text", "")
             state = get_user_state(user_id)
 
-            # Handle file upload
             if "document" in msg:
                 doc = msg["document"]
                 if doc["file_name"].endswith(".json"):
                     file_info = requests.get(f"{TELEGRAM_API}/getFile?file_id={doc['file_id']}").json()
                     if not file_info.get("ok"):
-                        send_message(chat_id, "❌ Failed to get file.")
+                        send_message(chat_id, "Failed to get file.")
                         return "OK", 200
-                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info['result']['file_path']}"
+                    
+                    file_path = file_info["result"]["file_path"]
+                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                    
                     try:
                         file_content = requests.get(file_url).text
                         json_data = json.loads(file_content)
                     except Exception as e:
-                        send_message(chat_id, f"❌ Error reading file: {e}")
+                        send_message(chat_id, f"Error: {e}")
                         return "OK", 200
 
-                    # If user is in test cookies state, treat as cookie test
-                    if state.get("waiting_test_file"):
-                        clear_user_state(user_id)
-                        cookies = parse_cookie_json(json_data)
-                        if cookies:
-                            send_message(chat_id, "⏳ Testing cookies...")
-                            def test():
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                result = loop.run_until_complete(test_cookies_from_dict(cookies))
-                                loop.close()
-                                if result["login_ok"] and result["api_ok"]:
-                                    msg = f"✅ <b>Cookies valid!</b>\n\nLogin: OK\nAPI: OK\nQuestions: {result['questions']}"
-                                elif result["login_ok"]:
-                                    msg = f"⚠️ <b>Partial issue</b>\n\nLogin: OK\nAPI: Failed\nError: {result['error']}"
-                                else:
-                                    msg = f"❌ <b>Cookies invalid</b>\n\nError: {result['error']}"
-                                send_message(chat_id, msg, [[{"text": "Menu", "callback_data": "back"}]])
-                            threading.Thread(target=test, daemon=True).start()
-                        else:
-                            send_message(chat_id, "❌ Invalid cookie file.")
-                        return "OK", 200
-
-                    # Otherwise, normal profile or answer cache
                     if is_cookie_file(json_data):
                         if state.get("waiting_profile_data"):
                             name = state.get("profile_name")
                         else:
                             set_user_state(user_id, {"waiting_profile_name": True, "pending_cookie_data": json_data})
-                            send_message(chat_id, "📝 Enter profile name:")
+                            send_message(chat_id, "Enter profile name:")
                             return "OK", 200
+                        
                         cookies = parse_cookie_json(json_data)
                         if cookies:
                             save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
                             clear_user_state(user_id)
-                            send_message(chat_id, f"✅ Profile <b>{name}</b> saved!")
+                            send_message(chat_id, f"✅ Profile saved: {name}")
                         else:
-                            send_message(chat_id, "❌ Invalid cookie file.")
+                            send_message(chat_id, "Invalid cookies.")
                     else:
-                        # Answer cache
-                        new_answers = {}
-                        if "answers" in json_data and isinstance(json_data["answers"], dict):
-                            new_answers = json_data["answers"]
-                        elif isinstance(json_data, list):
-                            for item in json_data:
-                                qid = item.get("question_id")
-                                ans = item.get("correct_answer")
-                                if qid and ans:
-                                    new_answers[qid] = ans
-                        if new_answers:
-                            cur = load_cache()
-                            cur["answers"].update(new_answers)
-                            save_cache(cur)
-                            send_message(chat_id, f"✅ {len(new_answers)} answers added. Total: {len(cur['answers'])}")
+                        answers = parse_answers_json(json_data)
+                        if answers:
+                            cache = load_cache()
+                            cache.update(answers)
+                            save_cache(cache)
+                            send_message(chat_id, f"✅ {len(answers)} answers added. Total: {len(cache)}")
                             clear_user_state(user_id)
                         else:
-                            send_message(chat_id, "❌ Invalid answer cache format.")
+                            send_message(chat_id, "Invalid answer format.")
+                    
                     return "OK", 200
 
-            # Text commands
             if text == "/start":
                 main_menu(chat_id, user_name)
             elif state.get("waiting_profile_name"):
@@ -415,46 +427,24 @@ def webhook():
                     if cookies:
                         save_profile(user_id, text, cookies["session_token"], cookies["session_data"])
                         clear_user_state(user_id)
-                        send_message(chat_id, f"✅ Profile <b>{text}</b> saved!")
+                        send_message(chat_id, f"✅ Profile saved: {text}")
                     else:
-                        send_message(chat_id, "❌ Invalid cookie data.")
+                        send_message(chat_id, "Invalid.")
                 else:
                     set_user_state(user_id, {"waiting_profile_data": True, "profile_name": text})
-                    send_message(chat_id, "📄 Send cookie JSON file or paste JSON now.")
+                    send_message(chat_id, "Send cookie JSON file or paste.")
             elif state.get("waiting_profile_data") and text:
                 try:
                     json_data = json.loads(text)
                     cookies = parse_cookie_json(json_data)
                     if cookies:
-                        name = state["profile_name"]
-                        save_profile(user_id, name, cookies["session_token"], cookies["session_data"])
+                        save_profile(user_id, state["profile_name"], cookies["session_token"], cookies["session_data"])
                         clear_user_state(user_id)
-                        send_message(chat_id, f"✅ Profile <b>{name}</b> saved!")
+                        send_message(chat_id, f"✅ Profile saved: {state['profile_name']}")
                     else:
-                        send_message(chat_id, "❌ Invalid cookie JSON.")
+                        send_message(chat_id, "Invalid format.")
                 except:
-                    send_message(chat_id, "❌ Invalid JSON. Send a file or paste correctly.")
-            elif state.get("waiting_test_token"):
-                set_user_state(user_id, {"waiting_test_data": True, "test_token": text})
-                send_message(chat_id, "🔐 Paste session data:")
-            elif state.get("waiting_test_data"):
-                token = state["test_token"]
-                data_val = text
-                clear_user_state(user_id)
-                send_message(chat_id, "⏳ Testing cookies...")
-                def test():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(test_cookies_from_dict({"session_token": token, "session_data": data_val}))
-                    loop.close()
-                    if result["login_ok"] and result["api_ok"]:
-                        msg = f"✅ <b>Cookies valid!</b>\n\nLogin: OK\nAPI: OK\nQuestions: {result['questions']}"
-                    elif result["login_ok"]:
-                        msg = f"⚠️ <b>Partial issue</b>\n\nLogin: OK\nAPI: Failed\nError: {result['error']}"
-                    else:
-                        msg = f"❌ <b>Cookies invalid</b>\n\nError: {result['error']}"
-                    send_message(chat_id, msg, [[{"text": "Menu", "callback_data": "back"}]])
-                threading.Thread(target=test, daemon=True).start()
+                    send_message(chat_id, "Invalid JSON.")
             else:
                 send_message(chat_id, "Send /start")
 
@@ -470,49 +460,32 @@ def webhook():
             if cb_data == "start_quiz":
                 profiles = get_user_profiles(user_id)
                 if not profiles:
-                    edit_message(chat_id, msg_id, "❌ No profiles. Add one first.",
-                                 [[{"text": "➕ Add", "callback_data": "add_profile"}], [{"text": "🔙 Back", "callback_data": "back"}]])
+                    edit_message(chat_id, msg_id, "No profiles.", [[{"text": "Add", "callback_data": "add_profile"}], [{"text": "Back", "callback_data": "back"}]])
                     return "OK", 200
-                text = "📋 Select profile:"
+                text = "Select profile:"
                 keyboard = [[{"text": name, "callback_data": f"sel_{name}"}] for name in profiles]
-                keyboard.append([{"text": "🔙 Back", "callback_data": "back"}])
+                keyboard.append([{"text": "Back", "callback_data": "back"}])
                 edit_message(chat_id, msg_id, text, keyboard)
 
             elif cb_data == "profiles":
                 show_profiles(chat_id, user_id, msg_id)
             elif cb_data == "add_profile":
                 set_user_state(user_id, {"waiting_profile_name": True})
-                edit_message(chat_id, msg_id, "📝 Enter profile name:", [[{"text": "❌ Cancel", "callback_data": "back"}]])
+                edit_message(chat_id, msg_id, "Profile name:", [[{"text": "Cancel", "callback_data": "back"}]])
             elif cb_data == "delete_profile":
                 profiles = get_user_profiles(user_id)
-                if not profiles:
-                    edit_message(chat_id, msg_id, "No profiles to delete.", [[{"text": "🔙 Back", "callback_data": "profiles"}]])
-                    return "OK", 200
-                text = "🗑️ Select profile to delete:"
-                keyboard = [[{"text": f"❌ {name}", "callback_data": f"del_{name}"}] for name in profiles]
-                keyboard.append([{"text": "🔙 Back", "callback_data": "back"}])
+                text = "Delete:"
+                keyboard = [[{"text": f"Delete {name}", "callback_data": f"del_{name}"}] for name in profiles]
+                keyboard.append([{"text": "Back", "callback_data": "back"}])
                 edit_message(chat_id, msg_id, text, keyboard)
             elif cb_data.startswith("del_"):
                 name = cb_data.replace("del_", "")
                 if delete_profile(user_id, name):
-                    edit_message(chat_id, msg_id, f"✅ Deleted {name}", [[{"text": "🔙 Profiles", "callback_data": "profiles"}]])
+                    edit_message(chat_id, msg_id, f"Deleted {name}", [[{"text": "Back", "callback_data": "profiles"}]])
                 else:
-                    edit_message(chat_id, msg_id, "❌ Not found", [[{"text": "🔙 Back", "callback_data": "profiles"}]])
+                    edit_message(chat_id, msg_id, "Not found", [[{"text": "Back", "callback_data": "profiles"}]])
             elif cb_data == "cache":
                 show_cache(chat_id, msg_id)
-            elif cb_data == "test_cookies":
-                keyboard = [
-                    [{"text": "📄 Send Cookie File", "callback_data": "test_file"}],
-                    [{"text": "✏️ Paste Manually", "callback_data": "test_paste"}],
-                    [{"text": "🔙 Back", "callback_data": "back"}],
-                ]
-                edit_message(chat_id, msg_id, "🔧 <b>Test Cookies</b>\n\nChoose method:", keyboard)
-            elif cb_data == "test_file":
-                set_user_state(user_id, {"waiting_test_file": True})
-                edit_message(chat_id, msg_id, "📄 Send your cookie JSON file.", [[{"text": "❌ Cancel", "callback_data": "back"}]])
-            elif cb_data == "test_paste":
-                set_user_state(user_id, {"waiting_test_token": True})
-                edit_message(chat_id, msg_id, "🔐 Paste session token:", [[{"text": "❌ Cancel", "callback_data": "back"}]])
             elif cb_data == "back":
                 main_menu(chat_id, user_name)
             elif cb_data.startswith("sel_"):
@@ -520,28 +493,50 @@ def webhook():
                 profiles = get_user_profiles(user_id)
                 profile = profiles.get(name)
                 if not profile:
-                    edit_message(chat_id, msg_id, "Profile not found", [[{"text": "🔙 Back", "callback_data": "back"}]])
+                    edit_message(chat_id, msg_id, "Not found", [[{"text": "Back", "callback_data": "back"}]])
                     return "OK", 200
-                text = f"✅ <b>{name}</b>\n\nReady to run 3 quizzes?"
-                keyboard = [[{"text": "🚀 Run 3 Quizzes", "callback_data": f"run_{name}"}], [{"text": "🔙 Back", "callback_data": "back"}]]
+                
+                cookie_str = f"__Secure-better-auth.session_token={profile['session_token']}; __Secure-better-auth.session_data={profile['session_data']}"
+                text = f"Profile: <b>{name}</b>\n\nReady to run?"
+                keyboard = [[{"text": "Run 3 Quizzes", "callback_data": f"run_{name}"}], [{"text": "Back", "callback_data": "back"}]]
                 edit_message(chat_id, msg_id, text, keyboard)
-                set_user_state(user_id, {"selected_profile": name, "cookies": {"session_token": profile["session_token"], "session_data": profile["session_data"]}})
+                set_user_state(user_id, {"selected_profile": name, "cookie_str": cookie_str})
+            
             elif cb_data.startswith("run_"):
                 state = get_user_state(user_id)
-                cookies = state.get("cookies")
-                if not cookies:
-                    edit_message(chat_id, msg_id, "❌ Session expired", [[{"text": "🔙 Back", "callback_data": "back"}]])
+                cookie_str = state.get("cookie_str")
+                
+                if not cookie_str:
+                    edit_message(chat_id, msg_id, "Expired", [[{"text": "Back", "callback_data": "back"}]])
                     return "OK", 200
-                edit_message(chat_id, msg_id, "⏳ Running 3 quizzes (~20s)...", None)
+                
+                edit_message(chat_id, msg_id, "⏳ Running 3 quizzes...", None)
+                
                 def run():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    cache = load_cache()
-                    answers = cache.get("answers", {})
-                    result = loop.run_until_complete(run_parallel_attempts(cookies, answers, 3))
-                    loop.close()
-                    text = f"✅ <b>Quiz Complete!</b>\n\n🎮 Attempts: {result['attempts']}/3\n✨ Correct: {result['correct']}/{result['total']}"
-                    edit_message(chat_id, msg_id, text, [[{"text": "🏠 Menu", "callback_data": "back"}]])
+                    try:
+                        cache = load_cache()
+                        
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        result = loop.run_until_complete(run_triple_parallel(cookie_str, cache))
+                        loop.close()
+                        
+                        if result.get("error"):
+                            text = f"❌ Error: {result['error']}"
+                        else:
+                            text = f"""✅ <b>Quiz Complete!</b>
+
+🎮 Attempts: {result['attempts']}/3"""
+                            
+                            for att in result.get("per_attempt", []):
+                                text += f"\n  Attempt {att['num']}: {att['correct']}/{att['total']}"
+                            
+                            text += f"\n\n✨ Total: {result['correct']}/{result['total']} correct"
+                        
+                        edit_message(chat_id, msg_id, text, [[{"text": "Menu", "callback_data": "back"}]])
+                    except Exception as e:
+                        edit_message(chat_id, msg_id, f"❌ Error: {str(e)[:100]}", [[{"text": "Back", "callback_data": "back"}]])
+                
                 threading.Thread(target=run, daemon=True).start()
 
         return "OK", 200
@@ -567,7 +562,7 @@ def health():
 
 @app.route("/", methods=["GET"])
 def index():
-    return "<h1>🤖 IGC Bot - Final</h1><p><a href='/setup'>Setup Webhook</a></p>", 200
+    return "<h1>🎮 IGC Parallel Bot</h1><p><a href='/setup'>Setup Webhook</a></p>", 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
